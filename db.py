@@ -1,8 +1,12 @@
 """
 SQLite layer for the monitor.
 
-Single table 'documents' keyed by file_id. Tracks every doc Verra has shown
-us, when we first noticed it, and when we last saw it (to detect updates).
+Keyed by doc_key = "{project_id}:{document_id}", since the new S&P API gives
+each document a unique `id` but no FileID and no per-document date/URL.
+
+Schema note: we no longer store a per-document date (the API's doc_modify_date
+is always null). We track existence + state_code, and detect NEW documents and
+state_code changes. "first_seen_at" is when OUR system first saw the doc.
 """
 
 import sqlite3
@@ -12,12 +16,13 @@ from pathlib import Path
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
-    file_id         INTEGER PRIMARY KEY,
+    doc_key         TEXT PRIMARY KEY,
+    doc_id          TEXT NOT NULL,
     project_id      INTEGER NOT NULL,
     project_name    TEXT NOT NULL,
     section         TEXT NOT NULL,
     title           TEXT NOT NULL,
-    date_updated    TEXT NOT NULL,
+    state_code      TEXT,
     url             TEXT NOT NULL,
     first_seen_at   TEXT NOT NULL,
     last_seen_at    TEXT NOT NULL
@@ -28,12 +33,10 @@ CREATE INDEX IF NOT EXISTS idx_project ON documents(project_id);
 
 
 def now_iso() -> str:
-    """ISO-8601 UTC timestamp."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
-    """Open the DB (creating it if needed) and ensure the schema exists."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
@@ -41,48 +44,45 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def get_document(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row | None:
-    """Look up a document by its Verra FileID. Returns None if not seen before."""
-    cur = conn.execute("SELECT * FROM documents WHERE file_id = ?", (file_id,))
+def get_document(conn: sqlite3.Connection, doc_key: str) -> sqlite3.Row | None:
+    cur = conn.execute("SELECT * FROM documents WHERE doc_key = ?", (doc_key,))
     return cur.fetchone()
 
 
 def insert_document(conn: sqlite3.Connection, doc: dict) -> None:
-    """Insert a freshly discovered document."""
     ts = now_iso()
     conn.execute(
         """
         INSERT INTO documents (
-            file_id, project_id, project_name, section,
-            title, date_updated, url, first_seen_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            doc_key, doc_id, project_id, project_name, section,
+            title, state_code, url, first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            doc["file_id"], doc["project_id"], doc["project_name"], doc["section"],
-            doc["title"], doc["date_updated"], doc["url"], ts, ts,
+            doc["doc_key"], doc["doc_id"], doc["project_id"], doc["project_name"],
+            doc["section"], doc["title"], doc["state_code"], doc["url"], ts, ts,
         ),
     )
     conn.commit()
 
 
 def update_document(conn: sqlite3.Connection, doc: dict) -> None:
-    """Update an existing document (date_updated, title, or URL changed)."""
     conn.execute(
         """
         UPDATE documents
-        SET title = ?, date_updated = ?, url = ?, last_seen_at = ?
-        WHERE file_id = ?
+        SET title = ?, section = ?, state_code = ?, url = ?, last_seen_at = ?
+        WHERE doc_key = ?
         """,
-        (doc["title"], doc["date_updated"], doc["url"], now_iso(), doc["file_id"]),
+        (doc["title"], doc["section"], doc["state_code"], doc["url"],
+         now_iso(), doc["doc_key"]),
     )
     conn.commit()
 
 
-def touch_last_seen(conn: sqlite3.Connection, file_id: int) -> None:
-    """Update last_seen_at without changing anything else (doc unchanged)."""
+def touch_last_seen(conn: sqlite3.Connection, doc_key: str) -> None:
     conn.execute(
-        "UPDATE documents SET last_seen_at = ? WHERE file_id = ?",
-        (now_iso(), file_id),
+        "UPDATE documents SET last_seen_at = ? WHERE doc_key = ?",
+        (now_iso(), doc_key),
     )
     conn.commit()
 

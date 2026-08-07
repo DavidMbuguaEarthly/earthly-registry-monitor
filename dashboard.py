@@ -412,7 +412,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="metric-value">__TOTAL_PROJECTS__</div>
     </div>
     <div class="metric">
-      <div class="metric-label">Newest upload</div>
+      <div class="metric-label">Latest detected</div>
       <div class="metric-value" style="font-size: 18px; line-height: 1.3;">__NEWEST_DATE__</div>
       <div class="metric-trend">__NEWEST_PROJECT__</div>
     </div>
@@ -443,7 +443,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <table id="docsTable">
       <thead>
         <tr>
-          <th data-sort="date_updated">Date <span class="sort-icon">▼</span></th>
+          <th data-sort="first_seen_at">Detected <span class="sort-icon">▼</span></th>
           <th data-sort="project_name">Project</th>
           <th data-sort="section">Section</th>
           <th data-sort="title">Document</th>
@@ -468,7 +468,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   let activeProject = "all";
   let activeSection = "";
   let searchTerm = "";
-  let sortKey = "date_updated";
+  let sortKey = "first_seen_at";
   let sortDir = "desc";
 
   // Parse DD/MM/YYYY into a sortable Date
@@ -545,9 +545,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   function sortDocs(docs) {
     return [...docs].sort((a, b) => {
       let av = a[sortKey], bv = b[sortKey];
-      if (sortKey === 'date_updated') {
-        av = parseDate(av).getTime();
-        bv = parseDate(bv).getTime();
+      if (sortKey === 'first_seen_at') {
+        av = new Date(av).getTime() || 0;
+        bv = new Date(bv).getTime() || 0;
       } else {
         av = (av || '').toLowerCase();
         bv = (bv || '').toLowerCase();
@@ -570,7 +570,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     } else {
       tbody.innerHTML = filtered.map(d => `
         <tr>
-          <td class="date-cell">${d.date_updated || '—'}</td>
+          <td class="date-cell">${(d.first_seen_at || '').slice(0, 10) || '—'}</td>
           <td>
             <div class="project-cell">${d.project_name}</div>
             <div class="project-cell-country">${d.country || ''}</div>
@@ -578,7 +578,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <td><span class="section-tag ${sectionClass(d.section)}">${d.section}</span></td>
           <td>
             <div class="doc-title"><a href="${d.url}" target="_blank" rel="noopener">${d.title}</a></div>
-            <div class="doc-meta">FileID ${d.file_id} · first seen ${d.first_seen_at.slice(0, 10)}</div>
+            <div class="doc-meta">${d.state_code || 'status n/a'} · first seen ${(d.first_seen_at || '').slice(0, 10)}</div>
           </td>
         </tr>
       `).join('');
@@ -636,8 +636,8 @@ def build_dashboard(db_path: Path, output_path: Path, projects_config: list[dict
 
     rows = conn.execute(
         """
-        SELECT file_id, project_id, project_name, section, title,
-               date_updated, url, first_seen_at, last_seen_at
+        SELECT doc_key, doc_id, project_id, project_name, section, title,
+               state_code, url, first_seen_at, last_seen_at
         FROM documents
         """
     ).fetchall()
@@ -649,12 +649,12 @@ def build_dashboard(db_path: Path, output_path: Path, projects_config: list[dict
     docs = []
     for r in rows:
         docs.append({
-            "file_id": r["file_id"],
+            "doc_id": r["doc_id"],
             "project_id": r["project_id"],
             "project_name": r["project_name"],
             "section": r["section"],
             "title": r["title"],
-            "date_updated": r["date_updated"],
+            "state_code": r["state_code"],
             "url": r["url"],
             "first_seen_at": r["first_seen_at"],
             "country": country_by_pid.get(r["project_id"], ""),
@@ -671,21 +671,13 @@ def build_dashboard(db_path: Path, output_path: Path, projects_config: list[dict
         for p in projects_config
     ]
 
-    # Find newest upload
-    def parse_date(s):
-        if not s:
-            return datetime(1900, 1, 1)
-        try:
-            parts = s.split("/")
-            return datetime(int(parts[2]), int(parts[1]), int(parts[0]))
-        except (ValueError, IndexError):
-            return datetime(1900, 1, 1)
-
+    # Most recently DETECTED document (we no longer have per-doc upload dates
+    # from the new API, so we surface when OUR system first saw a document).
     newest_date = "—"
     newest_project = ""
     if docs:
-        newest = max(docs, key=lambda d: parse_date(d["date_updated"]))
-        newest_date = newest["date_updated"] or "—"
+        newest = max(docs, key=lambda d: d["first_seen_at"] or "")
+        newest_date = (newest["first_seen_at"] or "—")[:10]
         newest_project = newest["project_name"]
 
     last_run = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")

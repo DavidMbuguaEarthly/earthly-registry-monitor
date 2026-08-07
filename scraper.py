@@ -1,106 +1,124 @@
 """
-Scraper for a single Verra project page.
+Scraper for the new Verra registry (S&P Global / Platts backend).
 
-For each project, walks every 'card-header bg-primary' section, finds the
-table inside it, and pulls (file_id, title, date, url, section) for each row.
+The old APX site was replaced ~July 2026 by an S&P-built platform. Project
+data now comes from a JSON API rather than a scraped HTML page, so this no
+longer uses Playwright - just httpx against:
+
+    https://prod-us.api.platts.com/ci-raas-prod/br-reg/rest/
+        public-report-manager/getProjectById/{project_id}/Markit
+
+Key differences from the old scraper, all handled here:
+  - Documents live in the JSON `documentList` array.
+  - Each document has a unique `id` (our dedup key; old FileID is gone).
+  - There is NO per-document date (`doc_modify_date` is null) and NO usable
+    per-document URL (`document_link` is identical for all docs), so we track
+    existence only and link to the project page, not the file.
+  - The API rate-limits aggressively (HTTP 429). We respect Retry-After and
+    back off with retries.
 """
 
-import re
-from urllib.parse import urlparse, parse_qs
-from playwright.async_api import Page
+import asyncio
+import httpx
 
 
-JS_EXTRACT_DOCUMENTS = """
-() => {
-    const results = [];
-    const sectionHeaders = document.querySelectorAll('.card-header.bg-primary');
-
-    sectionHeaders.forEach(header => {
-        const sectionName = header.textContent.trim();
-        // The table is inside the same parent .card as the header.
-        const card = header.closest('.card');
-        if (!card) return;
-
-        const tables = card.querySelectorAll('table.table-striped');
-        tables.forEach(table => {
-            const rows = table.querySelectorAll('tbody tr, tr');
-            rows.forEach(row => {
-                const cells = row.querySelectorAll('td');
-                if (cells.length < 2) return;
-
-                const link = cells[0].querySelector('a[href]');
-                if (!link) return;
-
-                results.push({
-                    section: sectionName,
-                    title: cells[0].textContent.trim(),
-                    date_updated: cells[1].textContent.trim(),
-                    url: link.href,
-                });
-            });
-        });
-    });
-    return results;
-}
-"""
+PROJECT_PAGE_TEMPLATE = (
+    "https://registry.verra.org/verra/public/program/VCS/projects/{project_id}"
+)
 
 
-def extract_file_id(url: str) -> int | None:
-    """Pull the FileID query param out of a Verra document URL."""
-    try:
-        qs = parse_qs(urlparse(url).query)
-        if "FileID" in qs:
-            return int(qs["FileID"][0])
-    except (ValueError, KeyError):
-        return None
+def _doc_key(project_id: int, doc_id) -> str:
+    """Composite unique key: project + document id. Stable across runs."""
+    return f"{project_id}:{doc_id}"
+
+
+async def _fetch_with_backoff(
+    client: httpx.AsyncClient, url: str,
+    max_retries: int, base_backoff_s: float,
+) -> dict | None:
+    """
+    GET a URL, respecting 429 rate limits. Returns parsed JSON dict, or None
+    if it ultimately failed. Honors Retry-After when the server provides it.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = await client.get(url, timeout=30.0, follow_redirects=True)
+        except httpx.HTTPError as e:
+            print(f"    network error (attempt {attempt}/{max_retries}): {e}")
+            await asyncio.sleep(base_backoff_s * attempt)
+            continue
+
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except ValueError:
+                print(f"    got 200 but response was not JSON")
+                return None
+
+        if resp.status_code == 429:
+            # Respect Retry-After if present, else exponential-ish backoff.
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                wait = int(retry_after) + 2
+            else:
+                wait = base_backoff_s * (2 ** (attempt - 1))
+            print(f"    429 rate limited (attempt {attempt}/{max_retries}); "
+                  f"waiting {wait:.0f}s")
+            await asyncio.sleep(wait)
+            continue
+
+        if resp.status_code == 400:
+            # A 400 means the request is malformed (e.g. missing headers).
+            # Retrying won't help - fail fast so we don't waste attempts.
+            print(f"    HTTP 400 Bad Request - not retrying (check headers)")
+            return None
+
+        print(f"    HTTP {resp.status_code} (attempt {attempt}/{max_retries})")
+        await asyncio.sleep(base_backoff_s * attempt)
+
     return None
 
 
 async def scrape_project(
-    page: Page, project: dict, registry_url_template: str,
-    page_timeout_ms: int, lazy_wait_ms: int,
-) -> list[dict]:
+    client: httpx.AsyncClient, project: dict, api_url_template: str,
+    max_retries: int, base_backoff_s: float,
+) -> list[dict] | None:
     """
-    Load one project page and return all documents found.
-    Each doc is a dict ready to hand to db.insert_document().
+    Fetch one project's documents from the API.
 
-    Wait strategy: 'domcontentloaded' rather than 'networkidle'. The Verra
-    project pages embed a live map (Microsoft/TomTom) that keeps the network
-    busy indefinitely, so 'networkidle' never fires and times out. We only
-    need the DOM/tables, which are ready at domcontentloaded; a short fixed
-    wait afterward lets any table rendering settle.
+    Returns a list of document dicts ready for the DB, or None if the fetch
+    failed entirely (so the caller can distinguish "0 documents" from
+    "couldn't reach the API" - important, since the latter must NOT be treated
+    as 'all documents disappeared').
     """
-    url = registry_url_template.format(project_id=project["id"])
-    print(f"  Loading {url}")
-    await page.goto(url, wait_until="domcontentloaded", timeout=page_timeout_ms)
+    url = api_url_template.format(project_id=project["id"])
+    print(f"  Fetching {url}")
+    data = await _fetch_with_backoff(client, url, max_retries, base_backoff_s)
 
-    # Wait for the document tables to actually appear in the DOM, with a
-    # generous timeout. If they never show (e.g. a project with no docs),
-    # fall through after lazy_wait and let extraction return what it finds.
-    try:
-        await page.wait_for_selector(".card-header.bg-primary", timeout=15_000)
-    except Exception:
-        pass
+    if data is None:
+        print(f"  FAILED to fetch VCS {project['id']} after retries")
+        return None
 
-    await page.wait_for_timeout(lazy_wait_ms)
+    doc_list = data.get("documentList") or []
+    project_page = PROJECT_PAGE_TEMPLATE.format(project_id=project["id"])
 
-    raw = await page.evaluate(JS_EXTRACT_DOCUMENTS)
     docs = []
     skipped = 0
-
-    for item in raw:
-        file_id = extract_file_id(item["url"])
-        if file_id is None:
+    for item in doc_list:
+        doc_id = item.get("id")
+        if doc_id is None:
             skipped += 1
             continue
         docs.append({
-            "file_id": file_id,
+            "doc_key": _doc_key(project["id"], doc_id),
+            "doc_id": str(doc_id),
             "project_id": project["id"],
             "project_name": project["name"],
-            "section": item["section"],
-            "title": item["title"],
-            "date_updated": item["date_updated"],
-            "url": item["url"],
+            "section": item.get("type_name", "Unknown"),
+            "title": item.get("document_name", "(untitled)"),
+            "state_code": item.get("state_code", ""),
+            # No per-doc date or URL available from this API; use project page.
+            "url": project_page,
         })
 
     print(f"  Found {len(docs)} documents ({skipped} rows skipped)")

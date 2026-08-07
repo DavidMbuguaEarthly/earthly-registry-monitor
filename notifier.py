@@ -29,8 +29,9 @@ def _build_block_message(
     fields = [
         {"type": "mrkdwn", "text": f"*Project*\n{project_name}"},
         {"type": "mrkdwn", "text": f"*Section*\n{section}"},
-        {"type": "mrkdwn", "text": f"*Date on Verra*\n{date_updated}"},
     ]
+    if date_updated:
+        fields.append({"type": "mrkdwn", "text": f"*Date on Verra*\n{date_updated}"})
     if change_note:
         fields.append({"type": "mrkdwn", "text": f"*What changed*\n{change_note}"})
 
@@ -96,4 +97,3 @@ def send_run_summary(webhook_url: str, new_count: int, updated_count: int, total
     except httpx.HTTPError as e:
         print(f"  [Slack] Failed to send summary: {e}")
         return False
-    
