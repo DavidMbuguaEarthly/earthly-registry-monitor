@@ -394,7 +394,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="brand">
       <div class="brand-eyebrow">Earthly · Internal Tool</div>
       <h1 class="brand-title">Registry Monitor</h1>
-      <div class="brand-subtitle">Tracking document activity across Earthly's Verra portfolio</div>
+      <div class="brand-subtitle">Tracking document activity across Earthly's Verra and Markit portfolio</div>
     </div>
     <div class="status-pill">
       <span class="status-dot"></span>
@@ -418,8 +418,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
     <div class="metric">
       <div class="metric-label">Registry</div>
-      <div class="metric-value" style="font-size: 22px;">Verra VCS</div>
-      <div class="metric-trend">+ CCB · SD VISta</div>
+      <div class="metric-value" style="font-size: 22px;">Verra + Markit</div>
+      <div class="metric-trend">VCS · CCB · Plan Vivo · WCC</div>
     </div>
   </section>
 
@@ -578,7 +578,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <td><span class="section-tag ${sectionClass(d.section)}">${d.section}</span></td>
           <td>
             <div class="doc-title"><a href="${d.url}" target="_blank" rel="noopener">${d.title}</a></div>
-            <div class="doc-meta">${d.state_code || 'status n/a'} · first seen ${(d.first_seen_at || '').slice(0, 10)}</div>
+            <div class="doc-meta">${d.registry}${d.state_code ? ' · ' + d.state_code : ''} · first seen ${(d.first_seen_at || '').slice(0, 10)}</div>
           </td>
         </tr>
       `).join('');
@@ -645,6 +645,7 @@ def build_dashboard(db_path: Path, output_path: Path, projects_config: list[dict
 
     # Country lookup from config
     country_by_pid = {p["id"]: p["country"] for p in projects_config}
+    registry_by_pid = {p["id"]: p.get("registry", "verra").capitalize() for p in projects_config}
 
     docs = []
     for r in rows:
@@ -658,6 +659,7 @@ def build_dashboard(db_path: Path, output_path: Path, projects_config: list[dict
             "url": r["url"],
             "first_seen_at": r["first_seen_at"],
             "country": country_by_pid.get(r["project_id"], ""),
+            "registry": registry_by_pid.get(r["project_id"], "Verra"),
         })
 
     # Project summary stats (count per project)

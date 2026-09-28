@@ -89,3 +89,10 @@ def touch_last_seen(conn: sqlite3.Connection, doc_key: str) -> None:
 
 def total_docs(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+
+def project_doc_count(conn: sqlite3.Connection, project_id: int) -> int:
+    """How many docs we already track for a project. 0 = newly added project."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM documents WHERE project_id = ?", (project_id,)
+    ).fetchone()[0]

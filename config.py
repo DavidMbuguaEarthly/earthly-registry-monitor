@@ -33,7 +33,33 @@ PROJECTS = [
     {"id": 1571, "name": "Manoa REDD+ Project", "country": "Brazil"},
     {"id": 576, "name": "Restoration & Reforestation - Caceres and Cravo Norte", "country": "Colombia"},
     {"id": 3660, "name": "Papariko - Mangrove Restoration", "country": "Kenya"},
+
+    # --- Markit registry (mer.markit.com) ---
+    # Only projects whose Markit page actually renders. Kukumuty and the 4 UK
+    # Woodland Carbon Code / Peatland Code projects (Pleasantfield, Montgreenan,
+    # Swarthghyll, Brisbane Mains) return blank pages for their sheet IDs and
+    # are parked; the UK ones need a different registry.
+    {"id": 104000000029084, "name": "Agroforestry - Upper Tana (UTNWF)", "country": "Kenya", "registry": "markit"},
+    {"id": 104000000014099, "name": "Highland restoration - Tigray (EthioTrees)", "country": "Ethiopia", "registry": "markit"},
+    {"id": 100000000000171, "name": "Trees for Global Benefit - Albertine Rift & Mt. Elgon", "country": "Uganda", "registry": "markit"},
+
+    # --- Plan Vivo project pages (planvivo.org) ---
+    # For Plan Vivo projects with no working Markit page. The id is the page slug.
+    {"id": "kukumuty-mozambique", "name": "Native woodland restoration - Sofala (Kukumuty)", "country": "Mozambique", "registry": "planvivo"},
+    {"id": "scolelte-mexico", "name": "Forest restoration - Chiapas and Oaxaca (Scolel'te)", "country": "Mexico", "registry": "planvivo"},
+    {"id": "fes-enying-cameroon", "name": "Fes Enying", "country": "Cameroon", "registry": "planvivo"},
+    {"id": "gula-gula-indonesia", "name": "Gula Gula", "country": "Indonesia", "registry": "planvivo"},
+    {"id": "communitree-nicaragua", "name": "CommuniTree", "country": "Nicaragua", "registry": "planvivo"},
 ]
+
+# Projects without a "registry" key are Verra.
+REGISTRY_LABELS = {"verra": "Verra", "markit": "Markit", "planvivo": "Plan Vivo"}
+
+MARKIT_URL_TEMPLATE = (
+    "https://mer.markit.com/br-reg/public/project.jsp?project_id={project_id}"
+)
+
+PLANVIVO_URL_TEMPLATE = "https://www.planvivo.org/projects/{project_id}"
 
 # New S&P/Platts JSON API endpoint (replaces the old APX projectDetail HTML page)
 API_URL_TEMPLATE = (
@@ -55,7 +81,7 @@ LOG_PATH = PROJECT_ROOT / "alerts.log"
 #   X-Ratelimit-Limit-Second: 10  |  -Minute: 50  |  -Day: 100001
 # Our one-request-per-project pattern is well within this, so modest delays
 # suffice. A full 17-project run takes ~2-3 min.
-DELAY_BETWEEN_PROJECTS_S = 3       # pause between each project fetch
+DELAY_BETWEEN_PROJECTS_S = 8       # pause between each project fetch
 MAX_RETRIES = 6                   # per-project retry attempts on 429/errors
 BASE_BACKOFF_S = 10               # base wait for backoff between retries
 
