@@ -24,6 +24,8 @@ import httpx
 import config
 import db
 from scraper import scrape_project
+from markit_scraper import scrape_markit_project
+from planvivo_scraper import scrape_planvivo_project
 from notifier import send_slack_alert, send_run_summary
 from dashboard import build_dashboard
 
@@ -36,7 +38,7 @@ def log_alert(message: str, log_path: Path) -> None:
         f.write(line + "\n")
 
 
-def diff_and_alert(conn, scraped_docs, log_path, webhook_url):
+def diff_and_alert(conn, scraped_docs, log_path, webhook_url, registry="Verra"):
     """Returns (new, updated, unchanged)."""
     new_count = updated_count = unchanged_count = 0
 
@@ -59,6 +61,7 @@ def diff_and_alert(conn, scraped_docs, log_path, webhook_url):
                 date_updated="",  # no per-doc date from new API
                 url=doc["url"],
                 alert_type="NEW",
+                registry=registry,
             )
         elif (existing["state_code"] != doc["state_code"]
               or existing["title"] != doc["title"]
@@ -84,6 +87,7 @@ def diff_and_alert(conn, scraped_docs, log_path, webhook_url):
                 date_updated="",
                 url=doc["url"],
                 alert_type="UPDATE",
+                registry=registry,
                 change_note=change_note,
             )
         else:
@@ -133,32 +137,57 @@ async def main():
         "Referer": "https://registry.verra.org/",
     }
 
-    async with httpx.AsyncClient(headers=headers) as client:
-        for i, project in enumerate(config.PROJECTS):
-            print(f"\n[{i + 1}/{len(config.PROJECTS)}] {project['name']} (VCS {project['id']})")
+    # Markit and planvivo.org are plain public HTML; no special headers needed.
+    markit_headers = {"User-Agent": headers["User-Agent"]}
 
-            docs = await scrape_project(
-                client, project,
-                config.API_URL_TEMPLATE,
-                config.MAX_RETRIES,
-                config.BASE_BACKOFF_S,
-            )
+    async with httpx.AsyncClient(headers=headers) as client, \
+               httpx.AsyncClient(headers=markit_headers) as markit_client:
+        for i, project in enumerate(config.PROJECTS):
+            registry = project.get("registry", "verra")
+            label = config.REGISTRY_LABELS.get(registry, registry)
+            print(f"\n[{i + 1}/{len(config.PROJECTS)}] {project['name']} ({label} {project['id']})")
+
+            if registry == "planvivo":
+                docs = await scrape_planvivo_project(
+                    markit_client, project,
+                    config.PLANVIVO_URL_TEMPLATE,
+                    config.MAX_RETRIES,
+                    config.BASE_BACKOFF_S,
+                )
+            elif registry == "markit":
+                docs = await scrape_markit_project(
+                    markit_client, project,
+                    config.MARKIT_URL_TEMPLATE,
+                    config.MAX_RETRIES,
+                    config.BASE_BACKOFF_S,
+                )
+            else:
+                docs = await scrape_project(
+                    client, project,
+                    config.API_URL_TEMPLATE,
+                    config.MAX_RETRIES,
+                    config.BASE_BACKOFF_S,
+                )
 
             # CRITICAL: a failed fetch (None) is NOT 'zero documents'. Skip it,
             # so we never delete/miss tracking for a project the API throttled.
             if docs is None:
-                failed_projects.append(f"VCS {project['id']} ({project['name']})")
+                failed_projects.append(f"{label} {project['id']} ({project['name']})")
                 if i < len(config.PROJECTS) - 1:
                     await asyncio.sleep(config.DELAY_BETWEEN_PROJECTS_S)
                 continue
 
-            if is_first_run:
+            # Seed quietly on the first ever run, AND whenever a project is newly
+            # added to the watchlist (no docs tracked yet). This stops a new
+            # project's whole history from flooding Slack.
+            if is_first_run or db.project_doc_count(conn, project["id"]) == 0:
                 for doc in docs:
                     if db.get_document(conn, doc["doc_key"]) is None:
                         db.insert_document(conn, doc)
-                print(f"  Seeded {len(docs)} documents (no alerts on first run)")
+                print(f"  Seeded {len(docs)} documents (new project, no alerts)")
             else:
-                n, u, s = diff_and_alert(conn, docs, config.LOG_PATH, config.SLACK_WEBHOOK_URL)
+                n, u, s = diff_and_alert(conn, docs, config.LOG_PATH,
+                                         config.SLACK_WEBHOOK_URL, registry=label)
                 totals["new"] += n
                 totals["updated"] += u
                 totals["unchanged"] += s

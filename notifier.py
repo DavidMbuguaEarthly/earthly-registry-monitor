@@ -15,15 +15,16 @@ import httpx
 def _build_block_message(
     project_name: str, section: str, title: str,
     date_updated: str, url: str, alert_type: str, change_note: str = "",
+    registry: str = "Verra",
 ) -> dict:
     """Build a Slack Block Kit payload for one document alert."""
     if alert_type == "NEW":
         emoji = ":new:"
-        header_text = "New document on Verra"
+        header_text = f"New document on {registry}"
         color_accent = "good"
     else:
         emoji = ":pencil:"
-        header_text = "Document updated on Verra"
+        header_text = f"Document updated on {registry}"
         color_accent = "warning"
 
     fields = [
@@ -31,7 +32,7 @@ def _build_block_message(
         {"type": "mrkdwn", "text": f"*Section*\n{section}"},
     ]
     if date_updated:
-        fields.append({"type": "mrkdwn", "text": f"*Date on Verra*\n{date_updated}"})
+        fields.append({"type": "mrkdwn", "text": f"*Date on {registry}*\n{date_updated}"})
     if change_note:
         fields.append({"type": "mrkdwn", "text": f"*What changed*\n{change_note}"})
 
@@ -56,6 +57,7 @@ def _build_block_message(
 def send_slack_alert(
     webhook_url: str, project_name: str, section: str, title: str,
     date_updated: str, url: str, alert_type: str, change_note: str = "",
+    registry: str = "Verra",
 ) -> bool:
     """
     Send one alert to Slack. Returns True on success, False on failure.
@@ -67,7 +69,7 @@ def send_slack_alert(
     payload = _build_block_message(
         project_name=project_name, section=section, title=title,
         date_updated=date_updated, url=url,
-        alert_type=alert_type, change_note=change_note,
+        alert_type=alert_type, change_note=change_note, registry=registry,
     )
 
     try:
